@@ -1,8 +1,15 @@
 package com.sapidblue.ledger.exception;
 
 import com.sapidblue.ledger.dto.response.ApiErrorResponse;
+import jakarta.persistence.LockTimeoutException;
+import jakarta.persistence.PessimisticLockException;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -69,6 +76,35 @@ public class GlobalExceptionHandler {
         return buildResponse(HttpStatus.BAD_REQUEST, message, request);
     }
 
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiErrorResponse> handleDataIntegrityViolation(
+            DataIntegrityViolationException ex, HttpServletRequest request) {
+        log.warn("Data integrity violation: {}", ex.getMostSpecificCause().getMessage());
+        return buildResponse(HttpStatus.CONFLICT,
+                "Request violates a data integrity constraint", request);
+    }
+
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ResponseEntity<ApiErrorResponse> handleOptimisticLockingFailure(
+            OptimisticLockingFailureException ex, HttpServletRequest request) {
+        log.warn("Optimistic locking conflict: {}", ex.getMessage());
+        return buildResponse(HttpStatus.CONFLICT,
+                "Concurrent modification detected; please retry", request, "1");
+    }
+
+    @ExceptionHandler({
+            PessimisticLockException.class,
+            LockTimeoutException.class,
+            PessimisticLockingFailureException.class,
+            CannotAcquireLockException.class
+    })
+    public ResponseEntity<ApiErrorResponse> handleLockContention(
+            Exception ex, HttpServletRequest request) {
+        log.warn("Database lock contention: {}", ex.getMessage());
+        return buildResponse(HttpStatus.SERVICE_UNAVAILABLE,
+                "Resource temporarily locked due to high contention; please retry", request, "2");
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleGenericException(
             Exception ex, HttpServletRequest request) {
@@ -79,6 +115,11 @@ public class GlobalExceptionHandler {
 
     private ResponseEntity<ApiErrorResponse> buildResponse(
             HttpStatus status, String message, HttpServletRequest request) {
+        return buildResponse(status, message, request, null);
+    }
+
+    private ResponseEntity<ApiErrorResponse> buildResponse(
+            HttpStatus status, String message, HttpServletRequest request, String retryAfterSeconds) {
         ApiErrorResponse error = ApiErrorResponse.builder()
                 .status(status.value())
                 .error(status.getReasonPhrase())
@@ -86,6 +127,10 @@ public class GlobalExceptionHandler {
                 .path(request.getRequestURI())
                 .timestamp(LocalDateTime.now())
                 .build();
-        return ResponseEntity.status(status).body(error);
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(status);
+        if (retryAfterSeconds != null) {
+            builder.header(HttpHeaders.RETRY_AFTER, retryAfterSeconds);
+        }
+        return builder.body(error);
     }
 }
