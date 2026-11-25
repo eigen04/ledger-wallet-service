@@ -1,0 +1,35 @@
+# ============================================
+# .gitignore — Ledger Wallet Service
+# ============================================
+
+# Build output
+target/
+
+# IDE files
+.idea/
+*.iml
+*.iws
+.vscode/
+*.code-workspace
+.project
+.classpath
+.settings/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment
+.env
+*.env.local
+
+# Logs
+*.log
+logs/
+
+# Maven
+.mvn/wrapper/maven-wrapper.jar
+
+# Docker
+docker/postgres_data/

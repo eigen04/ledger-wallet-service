@@ -1,0 +1,49 @@
+version: '3.9'
+
+services:
+  # ============================================
+  # PostgreSQL 16 Database
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: ledger-postgres
+    environment:
+      POSTGRES_DB: ledger_db
+      POSTGRES_USER: ledger_user
+      POSTGRES_PASSWORD: ledger_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ledger_user -d ledger_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ledger-network
+
+  # ============================================
+  # pgAdmin (Optional — Database GUI)
+  # ============================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: ledger-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@sapidblue.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ledger-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  ledger-network:
+    driver: bridge
