@@ -4,29 +4,16 @@ import com.sapidblue.ledger.dto.request.DepositRequest;
 import com.sapidblue.ledger.dto.request.TransferRequest;
 import com.sapidblue.ledger.dto.response.LedgerEntryResponse;
 import com.sapidblue.ledger.dto.response.TransferResponse;
-
-import java.util.List;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 public interface TransferService {
 
-    /**
-     * Execute a transfer between two accounts with full double-entry bookkeeping,
-     * pessimistic locking, and deterministic lock ordering to prevent deadlocks.
-     */
     TransferResponse executeTransfer(TransferRequest request);
 
-    /**
-     * Deposit funds into an account (single-leg credit entry).
-     */
     TransferResponse deposit(DepositRequest request);
 
-    /**
-     * Get all ledger entries (transaction history) for an account.
-     */
-    List<LedgerEntryResponse> getAccountLedger(Long accountId);
+    Page<LedgerEntryResponse> getAccountLedger(Long accountId, Pageable pageable);
 
-    /**
-     * Get all transfer records involving an account.
-     */
-    List<TransferResponse> getTransferHistory(Long accountId);
+    Page<TransferResponse> getTransferHistory(Long accountId, Pageable pageable);
 }

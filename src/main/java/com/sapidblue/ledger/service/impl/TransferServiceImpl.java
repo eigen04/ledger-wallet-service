@@ -17,6 +17,8 @@ import com.sapidblue.ledger.repository.TransferRecordRepository;
 import com.sapidblue.ledger.service.TransferService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -203,30 +205,25 @@ public class TransferServiceImpl implements TransferService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<LedgerEntryResponse> getAccountLedger(Long accountId) {
-        // Verify account exists
+    public Page<LedgerEntryResponse> getAccountLedger(Long accountId, Pageable pageable) {
         if (!accountRepository.existsById(accountId)) {
             throw new AccountNotFoundException(accountId);
         }
 
-        return ledgerEntryRepository.findByAccountIdOrderByCreatedAtDesc(accountId)
-                .stream()
-                .map(this::toLedgerEntryResponse)
-                .toList();
+        return ledgerEntryRepository.findByAccountIdOrderByCreatedAtDesc(accountId, pageable)
+                .map(this::toLedgerEntryResponse);
     }
 
     @Override
     @Transactional(readOnly = true)
-    public List<TransferResponse> getTransferHistory(Long accountId) {
+    public Page<TransferResponse> getTransferHistory(Long accountId, Pageable pageable) {
         if (!accountRepository.existsById(accountId)) {
             throw new AccountNotFoundException(accountId);
         }
 
         return transferRecordRepository
-                .findBySourceAccountIdOrDestinationAccountIdOrderByCreatedAtDesc(accountId, accountId)
-                .stream()
-                .map(this::toTransferResponse)
-                .toList();
+                .findBySourceAccountIdOrDestinationAccountIdOrderByCreatedAtDesc(accountId, accountId, pageable)
+                .map(this::toTransferResponse);
     }
 
     private TransferResponse toTransferResponse(TransferRecord record) {

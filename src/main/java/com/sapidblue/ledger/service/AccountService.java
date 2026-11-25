@@ -2,8 +2,8 @@ package com.sapidblue.ledger.service;
 
 import com.sapidblue.ledger.dto.request.CreateAccountRequest;
 import com.sapidblue.ledger.dto.response.AccountResponse;
-
-import java.util.List;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 public interface AccountService {
 
@@ -13,5 +13,5 @@ public interface AccountService {
 
     AccountResponse getAccountByEmail(String email);
 
-    List<AccountResponse> getAllAccounts();
+    Page<AccountResponse> getAllAccounts(Pageable pageable);
 }

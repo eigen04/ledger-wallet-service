@@ -10,11 +10,12 @@ import com.sapidblue.ledger.repository.AccountRepository;
 import com.sapidblue.ledger.service.AccountService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.util.List;
 
 @Slf4j
 @Service
@@ -64,10 +65,9 @@ public class AccountServiceImpl implements AccountService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<AccountResponse> getAllAccounts() {
-        return accountRepository.findAll().stream()
-                .map(this::toResponse)
-                .toList();
+    public Page<AccountResponse> getAllAccounts(Pageable pageable) {
+        return accountRepository.findAll(pageable)
+                .map(this::toResponse);
     }
 
     private AccountResponse toResponse(Account account) {

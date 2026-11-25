@@ -8,11 +8,12 @@ import com.sapidblue.ledger.service.TransferService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
-import java.util.List;
 
 @Slf4j
 @RestController
@@ -51,21 +52,19 @@ public class TransferController {
         return ResponseEntity.status(HttpStatus.CREATED).body(response);
     }
 
-    /**
-     * Get ledger entries (transaction history) for an account.
-     */
     @GetMapping("/ledger/{accountId}")
-    public ResponseEntity<List<LedgerEntryResponse>> getAccountLedger(@PathVariable Long accountId) {
+    public ResponseEntity<Page<LedgerEntryResponse>> getAccountLedger(
+            @PathVariable Long accountId,
+            @PageableDefault(size = 20) Pageable pageable) {
         log.info("GET /api/v1/transfers/ledger/{}", accountId);
-        return ResponseEntity.ok(transferService.getAccountLedger(accountId));
+        return ResponseEntity.ok(transferService.getAccountLedger(accountId, pageable));
     }
 
-    /**
-     * Get transfer history for an account.
-     */
     @GetMapping("/history/{accountId}")
-    public ResponseEntity<List<TransferResponse>> getTransferHistory(@PathVariable Long accountId) {
+    public ResponseEntity<Page<TransferResponse>> getTransferHistory(
+            @PathVariable Long accountId,
+            @PageableDefault(size = 20) Pageable pageable) {
         log.info("GET /api/v1/transfers/history/{}", accountId);
-        return ResponseEntity.ok(transferService.getTransferHistory(accountId));
+        return ResponseEntity.ok(transferService.getTransferHistory(accountId, pageable));
     }
 }
