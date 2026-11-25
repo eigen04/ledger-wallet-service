@@ -152,4 +152,55 @@ class TransferConcurrencyTest extends BaseIntegrationTest {
         assertTrue(reconciliationService.reconcileAccount(aliceId).getIsMatched());
         assertTrue(reconciliationService.reconcileAccount(bobId).getIsMatched());
     }
+
+    @Test
+    @DisplayName("Concurrent deposits and transfers preserve balances and pass system reconciliation")
+    void concurrentDepositsAndTransfers_shouldPreserveConservationAndReconcile() throws Exception {
+        int depositThreads = 10;
+        int transferThreads = 10;
+        int totalThreads = depositThreads + transferThreads;
+        ExecutorService executor = Executors.newFixedThreadPool(totalThreads);
+        CountDownLatch readyLatch = new CountDownLatch(totalThreads);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        List<Future<?>> futures = new ArrayList<>();
+
+        for (int i = 0; i < depositThreads; i++) {
+            futures.add(executor.submit(() -> {
+                readyLatch.countDown();
+                startLatch.await();
+                transferService.deposit(new DepositRequest(aliceId, new BigDecimal("100.0000"), "Concurrent deposit"));
+                return null;
+            }));
+        }
+
+        for (int i = 0; i < transferThreads; i++) {
+            futures.add(executor.submit(() -> {
+                readyLatch.countDown();
+                startLatch.await();
+                transferService.executeTransfer(TransferRequest.builder()
+                        .sourceAccountId(aliceId)
+                        .destinationAccountId(bobId)
+                        .amount(new BigDecimal("50.0000"))
+                        .description("Concurrent transfer with deposits")
+                        .build());
+                return null;
+            }));
+        }
+
+        assertTrue(readyLatch.await(10, TimeUnit.SECONDS));
+        startLatch.countDown();
+        executor.shutdown();
+        assertTrue(executor.awaitTermination(30, TimeUnit.SECONDS));
+
+        for (Future<?> future : futures) {
+            future.get();
+        }
+
+        AccountResponse alice = accountService.getAccountById(aliceId);
+        AccountResponse bob = accountService.getAccountById(bobId);
+
+        assertEquals(0, alice.getAvailableBalance().compareTo(new BigDecimal("10500.0000")));
+        assertEquals(0, bob.getAvailableBalance().compareTo(new BigDecimal("10500.0000")));
+        assertTrue(reconciliationService.reconcileAll().stream().allMatch(r -> Boolean.TRUE.equals(r.getIsMatched())));
+    }
 }

@@ -23,7 +23,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -144,7 +147,7 @@ class TransferIdempotencyIntegrationTest extends BaseIntegrationTest {
 
         String rawJson = objectMapper.writeValueAsString(body);
         idempotencyRecordRepository.save(IdempotencyRecord.builder()
-                .idempotencyKey(key)
+                .idempotencyKey("POST:/api/v1/transfers:" + key)
                 .requestHash(HashUtil.sha256(rawJson))
                 .status(IdempotencyStatus.IN_PROGRESS)
                 .lockedUntil(Instant.now().plusSeconds(30))
@@ -182,5 +185,165 @@ class TransferIdempotencyIntegrationTest extends BaseIntegrationTest {
         ResponseEntity<ApiErrorResponse> closedResp = restTemplate.postForEntity(
                 "/api/v1/transfers", request, ApiErrorResponse.class);
         assertEquals(HttpStatus.BAD_REQUEST, closedResp.getStatusCode());
+    }
+
+    @Test
+    @DisplayName("Expired IN_PROGRESS lease is reclaimed and processed cleanly")
+    void expiredLease_shouldBeReclaimedAndProcessed() throws Exception {
+        String key = "idem-expired-" + UUID.randomUUID();
+        TransferRequest body = TransferRequest.builder()
+                .sourceAccountId(sourceId)
+                .destinationAccountId(destId)
+                .amount(new BigDecimal("300.0000"))
+                .description("Expired lease recovery")
+                .build();
+
+        String rawJson = objectMapper.writeValueAsString(body);
+        idempotencyRecordRepository.save(IdempotencyRecord.builder()
+                .idempotencyKey("POST:/api/v1/transfers:" + key)
+                .requestHash(HashUtil.sha256(rawJson))
+                .status(IdempotencyStatus.IN_PROGRESS)
+                .lockedUntil(Instant.now().minusSeconds(5))
+                .build());
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", key);
+
+        ResponseEntity<TransferResponse> response = restTemplate.postForEntity(
+                "/api/v1/transfers", new HttpEntity<>(rawJson, headers), TransferResponse.class);
+
+        assertEquals(HttpStatus.CREATED, response.getStatusCode());
+        IdempotencyRecord updated = idempotencyRecordRepository
+                .findByIdempotencyKey("POST:/api/v1/transfers:" + key).orElseThrow();
+        assertEquals(IdempotencyStatus.COMPLETED, updated.getStatus());
+    }
+
+    @Test
+    @DisplayName("FAILED idempotency key allows safe retry")
+    void failedKey_shouldAllowRetry() throws Exception {
+        String key = "idem-failed-" + UUID.randomUUID();
+        TransferRequest body = TransferRequest.builder()
+                .sourceAccountId(sourceId)
+                .destinationAccountId(destId)
+                .amount(new BigDecimal("400.0000"))
+                .description("Retry after failure")
+                .build();
+
+        String rawJson = objectMapper.writeValueAsString(body);
+        idempotencyRecordRepository.save(IdempotencyRecord.builder()
+                .idempotencyKey("POST:/api/v1/transfers:" + key)
+                .requestHash(HashUtil.sha256(rawJson))
+                .status(IdempotencyStatus.FAILED)
+                .build());
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", key);
+
+        ResponseEntity<TransferResponse> response = restTemplate.postForEntity(
+                "/api/v1/transfers", new HttpEntity<>(rawJson, headers), TransferResponse.class);
+
+        assertEquals(HttpStatus.CREATED, response.getStatusCode());
+        IdempotencyRecord updated = idempotencyRecordRepository
+                .findByIdempotencyKey("POST:/api/v1/transfers:" + key).orElseThrow();
+        assertEquals(IdempotencyStatus.COMPLETED, updated.getStatus());
+    }
+
+    @Test
+    @DisplayName("Concurrent HTTP requests with identical Idempotency-Key debit only once")
+    void concurrentHttpRequestsWithSameKey_shouldDebitOnlyOnce() throws Exception {
+        String key = "idem-race-" + UUID.randomUUID();
+        TransferRequest body = TransferRequest.builder()
+                .sourceAccountId(sourceId)
+                .destinationAccountId(destId)
+                .amount(new BigDecimal("500.0000"))
+                .description("HTTP race")
+                .build();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", key);
+        HttpEntity<TransferRequest> entity = new HttpEntity<>(body, headers);
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<ResponseEntity<String>>> futures = new ArrayList<>();
+
+        for (int i = 0; i < 2; i++) {
+            futures.add(executor.submit(() -> {
+                ready.countDown();
+                start.await();
+                return restTemplate.postForEntity("/api/v1/transfers", entity, String.class);
+            }));
+        }
+
+        assertTrue(ready.await(10, TimeUnit.SECONDS));
+        start.countDown();
+        executor.shutdown();
+        assertTrue(executor.awaitTermination(30, TimeUnit.SECONDS));
+
+        int createdCount = 0;
+        int conflictCount = 0;
+        for (Future<ResponseEntity<String>> f : futures) {
+            HttpStatusCode status = f.get().getStatusCode();
+            if (status == HttpStatus.CREATED) createdCount++;
+            else if (status == HttpStatus.CONFLICT) conflictCount++;
+            else fail("Unexpected status: " + status);
+        }
+
+        assertTrue(createdCount >= 1 && (createdCount + conflictCount) == 2);
+        AccountResponse sourceAfter = accountService.getAccountById(sourceId);
+        assertEquals(0, sourceAfter.getAvailableBalance().compareTo(new BigDecimal("4500.0000")));
+    }
+
+    @Test
+    @DisplayName("Same Idempotency-Key across different routes does not collide")
+    void sameKeyAcrossDifferentRoutes_shouldNotCollide() {
+        String key = "idem-route-" + UUID.randomUUID();
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("Idempotency-Key", key);
+
+        DepositRequest deposit = new DepositRequest(sourceId, new BigDecimal("100.0000"), "Route A");
+        TransferRequest transfer = TransferRequest.builder()
+                .sourceAccountId(sourceId)
+                .destinationAccountId(destId)
+                .amount(new BigDecimal("100.0000"))
+                .description("Route B")
+                .build();
+
+        ResponseEntity<TransferResponse> depositResp = restTemplate.postForEntity(
+                "/api/v1/transfers/deposit", new HttpEntity<>(deposit, headers), TransferResponse.class);
+        ResponseEntity<TransferResponse> transferResp = restTemplate.postForEntity(
+                "/api/v1/transfers", new HttpEntity<>(transfer, headers), TransferResponse.class);
+
+        assertEquals(HttpStatus.CREATED, depositResp.getStatusCode());
+        assertEquals(HttpStatus.CREATED, transferResp.getStatusCode());
+    }
+
+    @Test
+    @DisplayName("Cross-currency transfer is rejected with HTTP 400")
+    void crossCurrencyTransfer_shouldBeRejected() {
+        AccountResponse usdAccount = accountService.createAccount(
+                CreateAccountRequest.builder()
+                        .accountHolderName("USD Holder")
+                        .email("usd-" + System.nanoTime() + "@test.com")
+                        .currency("USD")
+                        .build());
+
+        TransferRequest request = TransferRequest.builder()
+                .sourceAccountId(sourceId)
+                .destinationAccountId(usdAccount.getId())
+                .amount(new BigDecimal("100.0000"))
+                .description("Cross-currency")
+                .build();
+
+        ResponseEntity<ApiErrorResponse> response = restTemplate.postForEntity(
+                "/api/v1/transfers", request, ApiErrorResponse.class);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
     }
 }
