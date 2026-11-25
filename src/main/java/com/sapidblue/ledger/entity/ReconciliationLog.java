@@ -4,7 +4,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 @Entity
 @Table(name = "reconciliation_logs")
@@ -35,11 +35,11 @@ public class ReconciliationLog {
     private BigDecimal discrepancy;
 
     @Column(name = "reconciled_at", nullable = false, updatable = false)
-    private LocalDateTime reconciledAt;
+    private Instant reconciledAt;
 
     @PrePersist
     protected void onCreate() {
-        this.reconciledAt = LocalDateTime.now();
+        this.reconciledAt = Instant.now();
         if (this.discrepancy == null) this.discrepancy = BigDecimal.ZERO;
     }
 }

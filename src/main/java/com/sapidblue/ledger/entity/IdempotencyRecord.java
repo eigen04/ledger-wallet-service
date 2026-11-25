@@ -4,7 +4,7 @@ import com.sapidblue.ledger.enums.IdempotencyStatus;
 import jakarta.persistence.*;
 import lombok.*;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 @Entity
 @Table(name = "idempotency_records")
@@ -36,23 +36,24 @@ public class IdempotencyRecord {
     private String responseBody;
 
     @Column(name = "locked_until")
-    private LocalDateTime lockedUntil;
+    private Instant lockedUntil;
 
     @Column(name = "created_at", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
+    private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
-    private LocalDateTime updatedAt;
+    private Instant updatedAt;
 
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
-        this.updatedAt = LocalDateTime.now();
+        Instant now = Instant.now();
+        this.createdAt = now;
+        this.updatedAt = now;
         if (this.status == null) this.status = IdempotencyStatus.IN_PROGRESS;
     }
 
     @PreUpdate
     protected void onUpdate() {
-        this.updatedAt = LocalDateTime.now();
+        this.updatedAt = Instant.now();
     }
 }

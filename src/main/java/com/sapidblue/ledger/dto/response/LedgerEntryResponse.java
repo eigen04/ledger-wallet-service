@@ -4,7 +4,7 @@ import com.sapidblue.ledger.enums.EntryType;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.UUID;
 
 @Getter
@@ -20,5 +20,5 @@ public class LedgerEntryResponse {
     private BigDecimal amount;
     private BigDecimal balanceAfter;
     private String description;
-    private LocalDateTime createdAt;
+    private Instant createdAt;
 }

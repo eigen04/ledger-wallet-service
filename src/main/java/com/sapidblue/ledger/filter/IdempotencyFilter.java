@@ -19,7 +19,7 @@ import org.springframework.web.util.ContentCachingResponseWrapper;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.Optional;
 
 @Slf4j
@@ -53,8 +53,8 @@ public class IdempotencyFilter implements Filter {
 
         CachedBodyHttpServletRequest wrappedRequest = new CachedBodyHttpServletRequest(request);
         String requestHash = HashUtil.sha256(wrappedRequest.getBodyAsString());
-        LocalDateTime now = LocalDateTime.now();
-        LocalDateTime leaseExpiry = now.plusSeconds(LEASE_DURATION_SECONDS);
+        Instant now = Instant.now();
+        Instant leaseExpiry = now.plusSeconds(LEASE_DURATION_SECONDS);
 
         if (!acquireOrReplay(idempotencyKey, requestHash, now, leaseExpiry, wrappedRequest, response)) {
             return;
@@ -83,8 +83,8 @@ public class IdempotencyFilter implements Filter {
 
     private boolean acquireOrReplay(String idempotencyKey,
                                     String requestHash,
-                                    LocalDateTime now,
-                                    LocalDateTime leaseExpiry,
+                                    Instant now,
+                                    Instant leaseExpiry,
                                     HttpServletRequest request,
                                     HttpServletResponse response) throws IOException {
         Optional<IdempotencyRecord> existing = idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey);
@@ -116,8 +116,8 @@ public class IdempotencyFilter implements Filter {
     private boolean handleExistingRecord(IdempotencyRecord record,
                                          String idempotencyKey,
                                          String requestHash,
-                                         LocalDateTime now,
-                                         LocalDateTime leaseExpiry,
+                                         Instant now,
+                                         Instant leaseExpiry,
                                          HttpServletRequest request,
                                          HttpServletResponse response) throws IOException {
         if (!record.getRequestHash().equals(requestHash)) {
@@ -180,7 +180,7 @@ public class IdempotencyFilter implements Filter {
                 .error(status.getReasonPhrase())
                 .message(message)
                 .path(path)
-                .timestamp(LocalDateTime.now())
+                .timestamp(Instant.now())
                 .build();
         response.setStatus(status.value());
         response.setContentType("application/json");

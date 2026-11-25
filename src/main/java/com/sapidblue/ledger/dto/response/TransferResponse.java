@@ -4,7 +4,7 @@ import com.sapidblue.ledger.enums.TransferStatus;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.UUID;
 
 @Getter
@@ -21,5 +21,5 @@ public class TransferResponse {
     private String currency;
     private TransferStatus status;
     private String description;
-    private LocalDateTime createdAt;
+    private Instant createdAt;
 }

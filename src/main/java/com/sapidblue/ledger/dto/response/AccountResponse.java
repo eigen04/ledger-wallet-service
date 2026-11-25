@@ -4,7 +4,7 @@ import com.sapidblue.ledger.enums.AccountStatus;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 @Getter
 @Setter
@@ -19,6 +19,6 @@ public class AccountResponse {
     private BigDecimal lockedBalance;
     private String currency;
     private AccountStatus status;
-    private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
+    private Instant createdAt;
+    private Instant updatedAt;
 }

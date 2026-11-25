@@ -3,7 +3,7 @@ package com.sapidblue.ledger.dto.response;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 @Getter
 @Setter
@@ -16,5 +16,5 @@ public class ReconciliationResponse {
     private BigDecimal computedBalance;
     private Boolean isMatched;
     private BigDecimal discrepancy;
-    private LocalDateTime reconciledAt;
+    private Instant reconciledAt;
 }

@@ -7,7 +7,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 @Entity
 @Table(name = "accounts")
@@ -45,15 +45,16 @@ public class Account {
     private Long version;
 
     @Column(name = "created_at", nullable = false, updatable = false)
-    private LocalDateTime createdAt;
+    private Instant createdAt;
 
     @Column(name = "updated_at", nullable = false)
-    private LocalDateTime updatedAt;
+    private Instant updatedAt;
 
     @PrePersist
     protected void onCreate() {
-        this.createdAt = LocalDateTime.now();
-        this.updatedAt = LocalDateTime.now();
+        Instant now = Instant.now();
+        this.createdAt = now;
+        this.updatedAt = now;
         if (this.availableBalance == null) this.availableBalance = BigDecimal.ZERO;
         if (this.lockedBalance == null) this.lockedBalance = BigDecimal.ZERO;
         if (this.currency == null) this.currency = "INR";
@@ -62,7 +63,7 @@ public class Account {
 
     @PreUpdate
     protected void onUpdate() {
-        this.updatedAt = LocalDateTime.now();
+        this.updatedAt = Instant.now();
     }
 
     public void debit(BigDecimal amount, String transferCurrency) {

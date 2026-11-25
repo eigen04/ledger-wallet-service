@@ -3,7 +3,7 @@ package com.sapidblue.ledger.dto.response;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import lombok.*;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 @Getter
 @Setter
@@ -16,5 +16,5 @@ public class ApiErrorResponse {
     private String error;
     private String message;
     private String path;
-    private LocalDateTime timestamp;
+    private Instant timestamp;
 }

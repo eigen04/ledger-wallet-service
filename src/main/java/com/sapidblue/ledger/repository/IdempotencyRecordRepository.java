@@ -8,7 +8,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.Optional;
 
 @Repository
@@ -32,6 +32,6 @@ public interface IdempotencyRecordRepository extends JpaRepository<IdempotencyRe
            "       OR (r.status = com.sapidblue.ledger.enums.IdempotencyStatus.IN_PROGRESS AND r.lockedUntil < :now))")
     int reclaimLease(@Param("key") String key,
                      @Param("requestHash") String requestHash,
-                     @Param("newLockedUntil") LocalDateTime newLockedUntil,
-                     @Param("now") LocalDateTime now);
+                     @Param("newLockedUntil") Instant newLockedUntil,
+                     @Param("now") Instant now);
 }

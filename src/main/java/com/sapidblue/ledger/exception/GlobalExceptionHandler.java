@@ -17,7 +17,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -125,7 +125,7 @@ public class GlobalExceptionHandler {
                 .error(status.getReasonPhrase())
                 .message(message)
                 .path(request.getRequestURI())
-                .timestamp(LocalDateTime.now())
+                .timestamp(Instant.now())
                 .build();
         ResponseEntity.BodyBuilder builder = ResponseEntity.status(status);
         if (retryAfterSeconds != null) {
