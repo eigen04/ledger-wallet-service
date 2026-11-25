@@ -16,10 +16,6 @@ public interface IdempotencyRecordRepository extends JpaRepository<IdempotencyRe
 
     Optional<IdempotencyRecord> findByIdempotencyKey(String idempotencyKey);
 
-    /**
-     * Atomically reclaims a FAILED or lease-expired IN_PROGRESS record so only one
-     * retrying caller wins the execution lease.
-     */
     @Modifying
     @Transactional
     @Query("UPDATE IdempotencyRecord r " +
@@ -34,4 +30,38 @@ public interface IdempotencyRecordRepository extends JpaRepository<IdempotencyRe
                      @Param("requestHash") String requestHash,
                      @Param("newLockedUntil") Instant newLockedUntil,
                      @Param("now") Instant now);
+
+    // Fence completion/failure updates with the exact lease timestamp and active expiry
+    // so a stalled thread cannot overwrite a lease reclaimed by another caller.
+    @Modifying
+    @Transactional
+    @Query("UPDATE IdempotencyRecord r " +
+           "SET r.status = com.sapidblue.ledger.enums.IdempotencyStatus.COMPLETED, " +
+           "    r.responseStatus = :responseStatus, " +
+           "    r.responseBody = :responseBody, " +
+           "    r.lockedUntil = null, " +
+           "    r.updatedAt = :now " +
+           "WHERE r.idempotencyKey = :key " +
+           "  AND r.status = com.sapidblue.ledger.enums.IdempotencyStatus.IN_PROGRESS " +
+           "  AND r.lockedUntil = :expectedLockedUntil " +
+           "  AND r.lockedUntil > :now")
+    int markCompletedIfLeaseHeld(@Param("key") String key,
+                                 @Param("expectedLockedUntil") Instant expectedLockedUntil,
+                                 @Param("responseStatus") Integer responseStatus,
+                                 @Param("responseBody") String responseBody,
+                                 @Param("now") Instant now);
+
+    @Modifying
+    @Transactional
+    @Query("UPDATE IdempotencyRecord r " +
+           "SET r.status = com.sapidblue.ledger.enums.IdempotencyStatus.FAILED, " +
+           "    r.lockedUntil = null, " +
+           "    r.updatedAt = :now " +
+           "WHERE r.idempotencyKey = :key " +
+           "  AND r.status = com.sapidblue.ledger.enums.IdempotencyStatus.IN_PROGRESS " +
+           "  AND r.lockedUntil = :expectedLockedUntil " +
+           "  AND r.lockedUntil > :now")
+    int markFailedIfLeaseHeld(@Param("key") String key,
+                              @Param("expectedLockedUntil") Instant expectedLockedUntil,
+                              @Param("now") Instant now);
 }

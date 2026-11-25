@@ -7,17 +7,39 @@ import jakarta.servlet.http.HttpServletRequestWrapper;
 
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 
 public class CachedBodyHttpServletRequest extends HttpServletRequestWrapper {
 
+    public static final int MAX_BODY_BYTES = 1024 * 1024;
+
     private final byte[] cachedBody;
 
     public CachedBodyHttpServletRequest(HttpServletRequest request) throws IOException {
         super(request);
-        this.cachedBody = request.getInputStream().readAllBytes();
+        if (request.getContentLengthLong() > MAX_BODY_BYTES) {
+            throw new PayloadTooLargeException("Request body exceeds maximum allowed size of " + MAX_BODY_BYTES + " bytes");
+        }
+        this.cachedBody = readBounded(request.getInputStream(), MAX_BODY_BYTES);
+    }
+
+    private static byte[] readBounded(InputStream input, int maxBytes) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int total = 0;
+        int bytesRead;
+        while ((bytesRead = input.read(chunk)) != -1) {
+            total += bytesRead;
+            if (total > maxBytes) {
+                throw new PayloadTooLargeException("Request body exceeds maximum allowed size of " + maxBytes + " bytes");
+            }
+            buffer.write(chunk, 0, bytesRead);
+        }
+        return buffer.toByteArray();
     }
 
     public String getBodyAsString() {
@@ -52,5 +74,11 @@ public class CachedBodyHttpServletRequest extends HttpServletRequestWrapper {
     @Override
     public BufferedReader getReader() {
         return new BufferedReader(new InputStreamReader(getInputStream(), StandardCharsets.UTF_8));
+    }
+
+    public static class PayloadTooLargeException extends RuntimeException {
+        public PayloadTooLargeException(String message) {
+            super(message);
+        }
     }
 }

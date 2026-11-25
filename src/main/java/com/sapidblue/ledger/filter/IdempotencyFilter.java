@@ -20,6 +20,7 @@ import org.springframework.web.util.ContentCachingResponseWrapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 
 @Slf4j
@@ -29,6 +30,7 @@ import java.util.Optional;
 public class IdempotencyFilter implements Filter {
 
     private static final long LEASE_DURATION_SECONDS = 30L;
+    private static final int MAX_SCOPED_KEY_LENGTH = 255;
 
     private final IdempotencyRecordRepository idempotencyRecordRepository;
     private final ObjectMapper objectMapper;
@@ -45,18 +47,33 @@ public class IdempotencyFilter implements Filter {
             return;
         }
 
-        String idempotencyKey = request.getHeader("Idempotency-Key");
-        if (idempotencyKey == null || idempotencyKey.isBlank()) {
+        String rawKey = request.getHeader("Idempotency-Key");
+        if (rawKey == null || rawKey.isBlank()) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        CachedBodyHttpServletRequest wrappedRequest = new CachedBodyHttpServletRequest(request);
+        String scopedKey = request.getMethod().toUpperCase() + ":" + request.getRequestURI() + ":" + rawKey.trim();
+        if (scopedKey.length() > MAX_SCOPED_KEY_LENGTH) {
+            sendError(response, HttpStatus.BAD_REQUEST,
+                    "Idempotency-Key exceeds maximum supported length", request.getRequestURI());
+            return;
+        }
+
+        CachedBodyHttpServletRequest wrappedRequest;
+        try {
+            wrappedRequest = new CachedBodyHttpServletRequest(request);
+        } catch (CachedBodyHttpServletRequest.PayloadTooLargeException ex) {
+            sendError(response, HttpStatus.PAYLOAD_TOO_LARGE, ex.getMessage(), request.getRequestURI());
+            return;
+        }
+
         String requestHash = HashUtil.sha256(wrappedRequest.getBodyAsString());
-        Instant now = Instant.now();
+        // Truncate to microseconds to match PostgreSQL TIMESTAMPTZ precision for exact lease fencing.
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MICROS);
         Instant leaseExpiry = now.plusSeconds(LEASE_DURATION_SECONDS);
 
-        if (!acquireOrReplay(idempotencyKey, requestHash, now, leaseExpiry, wrappedRequest, response)) {
+        if (!acquireOrReplay(scopedKey, requestHash, now, leaseExpiry, wrappedRequest, response)) {
             return;
         }
 
@@ -68,40 +85,53 @@ public class IdempotencyFilter implements Filter {
             int responseStatus = wrappedResponse.getStatus();
             String responseBody = new String(wrappedResponse.getContentAsByteArray(), StandardCharsets.UTF_8);
 
+            Instant completionTime = Instant.now().truncatedTo(ChronoUnit.MICROS);
             if (responseStatus >= 500) {
-                markFailed(idempotencyKey);
+                int updated = idempotencyRecordRepository.markFailedIfLeaseHeld(
+                        scopedKey, leaseExpiry, completionTime);
+                if (updated == 0) {
+                    log.warn("Lost idempotency lease before marking FAILED for key {}", scopedKey);
+                }
             } else {
-                markCompleted(idempotencyKey, responseStatus, responseBody);
+                int updated = idempotencyRecordRepository.markCompletedIfLeaseHeld(
+                        scopedKey, leaseExpiry, responseStatus, responseBody, completionTime);
+                if (updated == 0) {
+                    log.warn("Lost idempotency lease before marking COMPLETED for key {}", scopedKey);
+                }
             }
 
             wrappedResponse.copyBodyToResponse();
         } catch (Exception e) {
-            markFailed(idempotencyKey);
+            int updated = idempotencyRecordRepository.markFailedIfLeaseHeld(
+                    scopedKey, leaseExpiry, Instant.now().truncatedTo(ChronoUnit.MICROS));
+            if (updated == 0) {
+                log.warn("Lost idempotency lease before marking FAILED on exception for key {}", scopedKey);
+            }
             throw e;
         }
     }
 
-    private boolean acquireOrReplay(String idempotencyKey,
+    private boolean acquireOrReplay(String scopedKey,
                                     String requestHash,
                                     Instant now,
                                     Instant leaseExpiry,
                                     HttpServletRequest request,
                                     HttpServletResponse response) throws IOException {
-        Optional<IdempotencyRecord> existing = idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey);
+        Optional<IdempotencyRecord> existing = idempotencyRecordRepository.findByIdempotencyKey(scopedKey);
         if (existing.isPresent()) {
-            return handleExistingRecord(existing.get(), idempotencyKey, requestHash, now, leaseExpiry, request, response);
+            return handleExistingRecord(existing.get(), scopedKey, requestHash, now, leaseExpiry, request, response);
         }
 
         try {
             idempotencyRecordRepository.save(IdempotencyRecord.builder()
-                    .idempotencyKey(idempotencyKey)
+                    .idempotencyKey(scopedKey)
                     .requestHash(requestHash)
                     .status(IdempotencyStatus.IN_PROGRESS)
                     .lockedUntil(leaseExpiry)
                     .build());
             return true;
         } catch (DataIntegrityViolationException e) {
-            Optional<IdempotencyRecord> raceRecord = idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey);
+            Optional<IdempotencyRecord> raceRecord = idempotencyRecordRepository.findByIdempotencyKey(scopedKey);
             if (raceRecord.isPresent() && !raceRecord.get().getRequestHash().equals(requestHash)) {
                 sendError(response, HttpStatus.UNPROCESSABLE_ENTITY,
                         "Idempotency key reused with a different request payload", request.getRequestURI());
@@ -114,14 +144,14 @@ public class IdempotencyFilter implements Filter {
     }
 
     private boolean handleExistingRecord(IdempotencyRecord record,
-                                         String idempotencyKey,
+                                         String scopedKey,
                                          String requestHash,
                                          Instant now,
                                          Instant leaseExpiry,
                                          HttpServletRequest request,
                                          HttpServletResponse response) throws IOException {
         if (!record.getRequestHash().equals(requestHash)) {
-            log.warn("Payload mismatch for idempotency key {}", idempotencyKey);
+            log.warn("Payload mismatch for idempotency key {}", scopedKey);
             sendError(response, HttpStatus.UNPROCESSABLE_ENTITY,
                     "Idempotency key reused with a different request payload", request.getRequestURI());
             return false;
@@ -142,7 +172,7 @@ public class IdempotencyFilter implements Filter {
 
         if (record.getStatus() == IdempotencyStatus.FAILED || leaseExpired) {
             int reclaimed = idempotencyRecordRepository.reclaimLease(
-                    idempotencyKey, requestHash, leaseExpiry, now);
+                    scopedKey, requestHash, leaseExpiry, now);
             if (reclaimed > 0) {
                 return true;
             }
@@ -151,26 +181,6 @@ public class IdempotencyFilter implements Filter {
         sendError(response, HttpStatus.CONFLICT,
                 "Request with this idempotency key is currently being processed", request.getRequestURI());
         return false;
-    }
-
-    private void markCompleted(String idempotencyKey, int responseStatus, String responseBody) {
-        idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey)
-                .ifPresent(record -> {
-                    record.setStatus(IdempotencyStatus.COMPLETED);
-                    record.setResponseStatus(responseStatus);
-                    record.setResponseBody(responseBody);
-                    record.setLockedUntil(null);
-                    idempotencyRecordRepository.save(record);
-                });
-    }
-
-    private void markFailed(String idempotencyKey) {
-        idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey)
-                .ifPresent(record -> {
-                    record.setStatus(IdempotencyStatus.FAILED);
-                    record.setLockedUntil(null);
-                    idempotencyRecordRepository.save(record);
-                });
     }
 
     private void sendError(HttpServletResponse response, HttpStatus status,
