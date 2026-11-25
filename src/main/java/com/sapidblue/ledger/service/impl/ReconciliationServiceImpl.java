@@ -11,6 +11,7 @@ import com.sapidblue.ledger.service.ReconciliationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -25,21 +26,17 @@ public class ReconciliationServiceImpl implements ReconciliationService {
     private final LedgerEntryRepository ledgerEntryRepository;
     private final ReconciliationLogRepository reconciliationLogRepository;
 
-    /**
-     * Reconcile a single account:
-     * Compares the snapshot balance (account table) against the computed balance
-     * (sum of all ledger entries). If they match, the account is reconciled.
-     * Any discrepancy is flagged for investigation.
-     */
+    // REPEATABLE_READ ensures accounts and ledger_entries are read from the same MVCC snapshot,
+    // preventing false-positive drift alerts during concurrent transfers.
     @Override
-    @Transactional
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
     public ReconciliationResponse reconcileAccount(Long accountId) {
         log.info("Reconciling account: {}", accountId);
 
         Account account = accountRepository.findById(accountId)
                 .orElseThrow(() -> new AccountNotFoundException(accountId));
 
-        BigDecimal snapshotBalance = account.getAvailableBalance();
+        BigDecimal snapshotBalance = account.getAvailableBalance().add(account.getLockedBalance());
         BigDecimal computedBalance = ledgerEntryRepository.computeBalanceFromEntries(accountId);
 
         if (computedBalance == null) {
@@ -70,7 +67,7 @@ public class ReconciliationServiceImpl implements ReconciliationService {
     }
 
     @Override
-    @Transactional
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
     public List<ReconciliationResponse> reconcileAll() {
         log.info("Starting full system reconciliation...");
 
