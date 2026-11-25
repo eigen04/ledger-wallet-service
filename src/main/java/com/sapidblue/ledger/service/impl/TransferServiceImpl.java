@@ -25,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 @Slf4j
 @Service
@@ -35,7 +36,8 @@ public class TransferServiceImpl implements TransferService {
     private final LedgerEntryRepository ledgerEntryRepository;
     private final TransferRecordRepository transferRecordRepository;
 
-    private static final String TREASURY_EMAIL_TEMPLATE = "system.treasury.%s@ledger.internal";
+    private static final int TREASURY_SHARD_COUNT = 8;
+    private static final String TREASURY_EMAIL_TEMPLATE = "system.treasury.%s.%d@ledger.internal";
 
     @Override
     @Transactional
@@ -74,6 +76,10 @@ public class TransferServiceImpl implements TransferService {
                 .filter(a -> a.getId().equals(request.getDestinationAccountId()))
                 .findFirst()
                 .orElseThrow(() -> new AccountNotFoundException(request.getDestinationAccountId()));
+
+        if (sourceAccount.isTreasury() || destAccount.isTreasury()) {
+            throw new InvalidTransferException("System treasury accounts cannot be used in peer transfers");
+        }
 
         sourceAccount.debit(request.getAmount(), sourceAccount.getCurrency());
         destAccount.credit(request.getAmount(), sourceAccount.getCurrency());
@@ -127,21 +133,21 @@ public class TransferServiceImpl implements TransferService {
     public TransferResponse deposit(DepositRequest request) {
         log.info("Depositing {} to account {}", request.getAmount(), request.getAccountId());
 
-        Account targetLookup = accountRepository.findById(request.getAccountId())
+        String currency = accountRepository.findCurrencyById(request.getAccountId())
                 .orElseThrow(() -> new AccountNotFoundException(request.getAccountId()));
 
-        String treasuryEmail = String.format(TREASURY_EMAIL_TEMPLATE, targetLookup.getCurrency().toLowerCase());
-        Account treasuryLookup = accountRepository.findByEmail(treasuryEmail)
+        int shard = ThreadLocalRandom.current().nextInt(TREASURY_SHARD_COUNT);
+        String treasuryEmail = String.format(TREASURY_EMAIL_TEMPLATE, currency.toLowerCase(), shard);
+        Long treasuryId = accountRepository.findIdByEmail(treasuryEmail)
                 .orElseThrow(() -> new AccountNotFoundException(
-                        "System treasury account not found for currency: " + targetLookup.getCurrency()));
+                        "System treasury account not found for currency: " + currency));
 
-        if (treasuryLookup.getId().equals(targetLookup.getId())) {
+        if (treasuryId.equals(request.getAccountId())) {
             throw new InvalidTransferException("Cannot deposit directly into system treasury account");
         }
 
-        // Lock treasury and target in ascending ID order to avoid deadlocks with concurrent deposits
-        Long firstLockId = Math.min(treasuryLookup.getId(), targetLookup.getId());
-        Long secondLockId = Math.max(treasuryLookup.getId(), targetLookup.getId());
+        Long firstLockId = Math.min(treasuryId, request.getAccountId());
+        Long secondLockId = Math.max(treasuryId, request.getAccountId());
 
         List<Account> lockedAccounts = accountRepository
                 .findAllByIdWithPessimisticLockOrdered(List.of(firstLockId, secondLockId));
@@ -151,14 +157,18 @@ public class TransferServiceImpl implements TransferService {
         }
 
         Account treasuryAccount = lockedAccounts.stream()
-                .filter(a -> a.getId().equals(treasuryLookup.getId()))
+                .filter(a -> a.getId().equals(treasuryId))
                 .findFirst()
-                .orElseThrow(() -> new AccountNotFoundException(treasuryLookup.getId()));
+                .orElseThrow(() -> new AccountNotFoundException(treasuryId));
 
         Account targetAccount = lockedAccounts.stream()
-                .filter(a -> a.getId().equals(targetLookup.getId()))
+                .filter(a -> a.getId().equals(request.getAccountId()))
                 .findFirst()
-                .orElseThrow(() -> new AccountNotFoundException(targetLookup.getId()));
+                .orElseThrow(() -> new AccountNotFoundException(request.getAccountId()));
+
+        if (targetAccount.isTreasury()) {
+            throw new InvalidTransferException("Cannot deposit directly into system treasury account");
+        }
 
         treasuryAccount.debit(request.getAmount(), targetAccount.getCurrency());
         targetAccount.credit(request.getAmount(), targetAccount.getCurrency());

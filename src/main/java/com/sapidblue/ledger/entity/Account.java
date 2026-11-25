@@ -1,6 +1,7 @@
 package com.sapidblue.ledger.entity;
 
 import com.sapidblue.ledger.enums.AccountStatus;
+import com.sapidblue.ledger.enums.AccountType;
 import com.sapidblue.ledger.exception.InsufficientBalanceException;
 import com.sapidblue.ledger.exception.InvalidTransferException;
 import jakarta.persistence.*;
@@ -40,6 +41,10 @@ public class Account {
     @Column(nullable = false, length = 20)
     private AccountStatus status;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "account_type", nullable = false, length = 20)
+    private AccountType accountType;
+
     @Version
     @Column(nullable = false)
     private Long version;
@@ -59,6 +64,7 @@ public class Account {
         if (this.lockedBalance == null) this.lockedBalance = BigDecimal.ZERO;
         if (this.currency == null) this.currency = "INR";
         if (this.status == null) this.status = AccountStatus.ACTIVE;
+        if (this.accountType == null) this.accountType = AccountType.USER;
     }
 
     @PreUpdate
@@ -66,9 +72,13 @@ public class Account {
         this.updatedAt = Instant.now();
     }
 
+    public boolean isTreasury() {
+        return this.accountType == AccountType.TREASURY;
+    }
+
     public void debit(BigDecimal amount, String transferCurrency) {
         validateTransactable(amount, transferCurrency);
-        if (this.availableBalance.compareTo(amount) < 0) {
+        if (!isTreasury() && this.availableBalance.compareTo(amount) < 0) {
             throw new InsufficientBalanceException(
                     String.format("Account %d has insufficient balance. Available: %s, Required: %s",
                             this.id, this.availableBalance, amount));

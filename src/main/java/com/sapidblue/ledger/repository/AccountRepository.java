@@ -20,6 +20,12 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
 
     boolean existsByEmail(String email);
 
+    @Query("SELECT a.currency FROM Account a WHERE a.id = :id")
+    Optional<String> findCurrencyById(@Param("id") Long id);
+
+    @Query("SELECT a.id FROM Account a WHERE a.email = :email")
+    Optional<Long> findIdByEmail(@Param("email") String email);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @QueryHints({@QueryHint(name = "jakarta.persistence.lock.timeout", value = "2000")})
     @Query("SELECT a FROM Account a WHERE a.id = :id")
