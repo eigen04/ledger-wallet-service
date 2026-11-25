@@ -11,7 +11,7 @@
         <relativePath/>
     </parent>
 
-    <groupId>com.sapidblue</groupId>
+    <groupId>com.eigen04</groupId>
     <artifactId>ledger-wallet-service</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <name>Distributed Ledger Wallet Service</name>

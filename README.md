@@ -63,7 +63,7 @@ curl -X POST http://localhost:8080/api/v1/reconciliation/all
 
 ```
 ledger-wallet-service/
-├── src/main/java/com/sapidblue/ledger/
+├── src/main/java/com/eigen04/ledger/
 │   ├── LedgerWalletApplication.java       # Spring Boot entry point
 │   ├── config/                             # Web & Jackson configuration
 │   ├── controller/                         # REST API controllers
@@ -144,4 +144,4 @@ mvn verify
 
 ## 📄 License
 
-Private — Sapidblue Technologies
+Personal Project — Anant Agarwal

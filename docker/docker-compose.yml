@@ -30,7 +30,7 @@ services:
     image: dpage/pgadmin4:latest
     container_name: ledger-pgadmin
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@sapidblue.com
+      PGADMIN_DEFAULT_EMAIL: admin@eigen04.dev
       PGADMIN_DEFAULT_PASSWORD: admin123
     ports:
       - "5050:80"
