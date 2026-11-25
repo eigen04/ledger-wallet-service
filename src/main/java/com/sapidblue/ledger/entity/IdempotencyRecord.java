@@ -35,6 +35,9 @@ public class IdempotencyRecord {
     @Column(name = "response_body", columnDefinition = "TEXT")
     private String responseBody;
 
+    @Column(name = "locked_until")
+    private LocalDateTime lockedUntil;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
 

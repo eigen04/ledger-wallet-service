@@ -13,8 +13,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.annotation.Order;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
-import org.springframework.web.util.ContentCachingRequestWrapper;
 import org.springframework.web.util.ContentCachingResponseWrapper;
 
 import java.io.IOException;
@@ -22,21 +22,13 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.Optional;
 
-/**
- * Idempotency Filter — intercepts requests with Idempotency-Key header.
- *
- * Request Lifecycle State Machine:
- * 1. No key → pass through (not idempotent)
- * 2. New key → INSERT IN_PROGRESS → execute → update to COMPLETED with cached response
- * 3. Duplicate key (COMPLETED) → return cached response immediately
- * 4. Duplicate key (IN_PROGRESS) → return 409 Conflict
- * 5. Duplicate key (payload mismatch) → return 422 Unprocessable Entity
- */
 @Slf4j
 @Component
 @Order(1)
 @RequiredArgsConstructor
 public class IdempotencyFilter implements Filter {
+
+    private static final long LEASE_DURATION_SECONDS = 30L;
 
     private final IdempotencyRecordRepository idempotencyRecordRepository;
     private final ObjectMapper objectMapper;
@@ -48,114 +40,149 @@ public class IdempotencyFilter implements Filter {
         HttpServletRequest request = (HttpServletRequest) servletRequest;
         HttpServletResponse response = (HttpServletResponse) servletResponse;
 
-        // Only apply idempotency to POST requests
         if (!"POST".equalsIgnoreCase(request.getMethod())) {
             filterChain.doFilter(request, response);
             return;
         }
 
         String idempotencyKey = request.getHeader("Idempotency-Key");
-
-        // No idempotency key — pass through normally
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        log.info("Idempotency check for key: {}", idempotencyKey);
+        CachedBodyHttpServletRequest wrappedRequest = new CachedBodyHttpServletRequest(request);
+        String requestHash = HashUtil.sha256(wrappedRequest.getBodyAsString());
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime leaseExpiry = now.plusSeconds(LEASE_DURATION_SECONDS);
 
-        // Wrap request to read body multiple times
-        ContentCachingRequestWrapper wrappedRequest = new ContentCachingRequestWrapper(request);
-        ContentCachingResponseWrapper wrappedResponse = new ContentCachingResponseWrapper(response);
-
-        // We need to let the request pass through first to cache the body
-        // Then check idempotency
-        // Actually, we need to read the body first, so let's proceed and check after
-
-        Optional<IdempotencyRecord> existing = idempotencyRecordRepository
-                .findByIdempotencyKey(idempotencyKey);
-
-        if (existing.isPresent()) {
-            IdempotencyRecord record = existing.get();
-
-            if (record.getStatus() == IdempotencyStatus.COMPLETED) {
-                // Return cached response
-                log.info("Idempotency key {} already completed. Returning cached response.", idempotencyKey);
-                response.setStatus(record.getResponseStatus());
-                response.setContentType("application/json");
-                response.getWriter().write(record.getResponseBody());
-                return;
-            }
-
-            if (record.getStatus() == IdempotencyStatus.IN_PROGRESS) {
-                // Another request is currently processing
-                log.warn("Idempotency key {} is currently IN_PROGRESS. Returning 409.", idempotencyKey);
-                sendError(response, HttpServletResponse.SC_CONFLICT,
-                        "Request with this idempotency key is currently being processed");
-                return;
-            }
-        }
-
-        // New key — try to insert
-        try {
-            IdempotencyRecord newRecord = IdempotencyRecord.builder()
-                    .idempotencyKey(idempotencyKey)
-                    .requestHash("pending")  // Will be updated after body is read
-                    .status(IdempotencyStatus.IN_PROGRESS)
-                    .build();
-            idempotencyRecordRepository.save(newRecord);
-        } catch (DataIntegrityViolationException e) {
-            // Race condition — another thread inserted first
-            log.warn("Concurrent insert for idempotency key {}. Returning 409.", idempotencyKey);
-            sendError(response, HttpServletResponse.SC_CONFLICT,
-                    "Request with this idempotency key is currently being processed");
+        if (!acquireOrReplay(idempotencyKey, requestHash, now, leaseExpiry, wrappedRequest, response)) {
             return;
         }
 
-        // Execute the actual request
+        ContentCachingResponseWrapper wrappedResponse = new ContentCachingResponseWrapper(response);
+
         try {
             filterChain.doFilter(wrappedRequest, wrappedResponse);
 
-            // Cache the response
-            String responseBody = new String(wrappedResponse.getContentAsByteArray(), StandardCharsets.UTF_8);
             int responseStatus = wrappedResponse.getStatus();
+            String responseBody = new String(wrappedResponse.getContentAsByteArray(), StandardCharsets.UTF_8);
 
-            // Compute request body hash
-            String requestBody = new String(wrappedRequest.getContentAsByteArray(), StandardCharsets.UTF_8);
-            String requestHash = HashUtil.sha256(requestBody);
+            if (responseStatus >= 500) {
+                markFailed(idempotencyKey);
+            } else {
+                markCompleted(idempotencyKey, responseStatus, responseBody);
+            }
 
-            // Update idempotency record
-            idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey)
-                    .ifPresent(record -> {
-                        record.setStatus(IdempotencyStatus.COMPLETED);
-                        record.setResponseStatus(responseStatus);
-                        record.setResponseBody(responseBody);
-                        record.setRequestHash(requestHash);
-                        idempotencyRecordRepository.save(record);
-                    });
-
-            // Copy response body to actual response
             wrappedResponse.copyBodyToResponse();
-
         } catch (Exception e) {
-            // Mark as FAILED
-            idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey)
-                    .ifPresent(record -> {
-                        record.setStatus(IdempotencyStatus.FAILED);
-                        idempotencyRecordRepository.save(record);
-                    });
+            markFailed(idempotencyKey);
             throw e;
         }
     }
 
-    private void sendError(HttpServletResponse response, int status, String message) throws IOException {
+    private boolean acquireOrReplay(String idempotencyKey,
+                                    String requestHash,
+                                    LocalDateTime now,
+                                    LocalDateTime leaseExpiry,
+                                    HttpServletRequest request,
+                                    HttpServletResponse response) throws IOException {
+        Optional<IdempotencyRecord> existing = idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey);
+        if (existing.isPresent()) {
+            return handleExistingRecord(existing.get(), idempotencyKey, requestHash, now, leaseExpiry, request, response);
+        }
+
+        try {
+            idempotencyRecordRepository.save(IdempotencyRecord.builder()
+                    .idempotencyKey(idempotencyKey)
+                    .requestHash(requestHash)
+                    .status(IdempotencyStatus.IN_PROGRESS)
+                    .lockedUntil(leaseExpiry)
+                    .build());
+            return true;
+        } catch (DataIntegrityViolationException e) {
+            Optional<IdempotencyRecord> raceRecord = idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey);
+            if (raceRecord.isPresent() && !raceRecord.get().getRequestHash().equals(requestHash)) {
+                sendError(response, HttpStatus.UNPROCESSABLE_ENTITY,
+                        "Idempotency key reused with a different request payload", request.getRequestURI());
+                return false;
+            }
+            sendError(response, HttpStatus.CONFLICT,
+                    "Request with this idempotency key is currently being processed", request.getRequestURI());
+            return false;
+        }
+    }
+
+    private boolean handleExistingRecord(IdempotencyRecord record,
+                                         String idempotencyKey,
+                                         String requestHash,
+                                         LocalDateTime now,
+                                         LocalDateTime leaseExpiry,
+                                         HttpServletRequest request,
+                                         HttpServletResponse response) throws IOException {
+        if (!record.getRequestHash().equals(requestHash)) {
+            log.warn("Payload mismatch for idempotency key {}", idempotencyKey);
+            sendError(response, HttpStatus.UNPROCESSABLE_ENTITY,
+                    "Idempotency key reused with a different request payload", request.getRequestURI());
+            return false;
+        }
+
+        if (record.getStatus() == IdempotencyStatus.COMPLETED) {
+            response.setStatus(record.getResponseStatus());
+            response.setContentType("application/json");
+            if (record.getResponseBody() != null) {
+                response.getWriter().write(record.getResponseBody());
+            }
+            return false;
+        }
+
+        boolean leaseExpired = record.getStatus() == IdempotencyStatus.IN_PROGRESS
+                && record.getLockedUntil() != null
+                && record.getLockedUntil().isBefore(now);
+
+        if (record.getStatus() == IdempotencyStatus.FAILED || leaseExpired) {
+            int reclaimed = idempotencyRecordRepository.reclaimLease(
+                    idempotencyKey, requestHash, leaseExpiry, now);
+            if (reclaimed > 0) {
+                return true;
+            }
+        }
+
+        sendError(response, HttpStatus.CONFLICT,
+                "Request with this idempotency key is currently being processed", request.getRequestURI());
+        return false;
+    }
+
+    private void markCompleted(String idempotencyKey, int responseStatus, String responseBody) {
+        idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey)
+                .ifPresent(record -> {
+                    record.setStatus(IdempotencyStatus.COMPLETED);
+                    record.setResponseStatus(responseStatus);
+                    record.setResponseBody(responseBody);
+                    record.setLockedUntil(null);
+                    idempotencyRecordRepository.save(record);
+                });
+    }
+
+    private void markFailed(String idempotencyKey) {
+        idempotencyRecordRepository.findByIdempotencyKey(idempotencyKey)
+                .ifPresent(record -> {
+                    record.setStatus(IdempotencyStatus.FAILED);
+                    record.setLockedUntil(null);
+                    idempotencyRecordRepository.save(record);
+                });
+    }
+
+    private void sendError(HttpServletResponse response, HttpStatus status,
+                           String message, String path) throws IOException {
         ApiErrorResponse error = ApiErrorResponse.builder()
-                .status(status)
-                .error("Conflict")
+                .status(status.value())
+                .error(status.getReasonPhrase())
                 .message(message)
+                .path(path)
                 .timestamp(LocalDateTime.now())
                 .build();
-        response.setStatus(status);
+        response.setStatus(status.value());
         response.setContentType("application/json");
         response.getWriter().write(objectMapper.writeValueAsString(error));
     }
