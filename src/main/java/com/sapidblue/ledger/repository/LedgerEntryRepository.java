@@ -28,4 +28,10 @@ public interface LedgerEntryRepository extends JpaRepository<LedgerEntry, Long> 
            "COALESCE(SUM(CASE WHEN le.entryType = 'DEBIT' THEN le.amount ELSE CAST(0 AS big_decimal) END), CAST(0 AS big_decimal)) " +
            "FROM LedgerEntry le WHERE le.accountId = :accountId")
     BigDecimal computeBalanceFromEntries(@Param("accountId") Long accountId);
+
+    @Query("SELECT le.accountId, " +
+           "COALESCE(SUM(CASE WHEN le.entryType = com.sapidblue.ledger.enums.EntryType.CREDIT THEN le.amount ELSE CAST(0 AS big_decimal) END), CAST(0 AS big_decimal)) - " +
+           "COALESCE(SUM(CASE WHEN le.entryType = com.sapidblue.ledger.enums.EntryType.DEBIT THEN le.amount ELSE CAST(0 AS big_decimal) END), CAST(0 AS big_decimal)) " +
+           "FROM LedgerEntry le GROUP BY le.accountId")
+    List<Object[]> computeAllBalancesFromEntries();
 }

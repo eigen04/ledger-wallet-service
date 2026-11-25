@@ -15,7 +15,10 @@ import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -72,19 +75,40 @@ public class ReconciliationServiceImpl implements ReconciliationService {
         log.info("Starting full system reconciliation...");
 
         List<Account> allAccounts = accountRepository.findAll();
+        Map<Long, BigDecimal> computedByAccount = ledgerEntryRepository.computeAllBalancesFromEntries()
+                .stream()
+                .collect(Collectors.toMap(
+                        row -> ((Number) row[0]).longValue(),
+                        row -> (BigDecimal) row[1]));
 
-        List<ReconciliationResponse> results = allAccounts.stream()
-                .map(account -> reconcileAccount(account.getId()))
-                .toList();
+        List<ReconciliationLog> logs = new ArrayList<>(allAccounts.size());
+        for (Account account : allAccounts) {
+            BigDecimal snapshotBalance = account.getAvailableBalance().add(account.getLockedBalance());
+            BigDecimal computedBalance = computedByAccount.getOrDefault(account.getId(), BigDecimal.ZERO);
+            BigDecimal discrepancy = snapshotBalance.subtract(computedBalance).abs();
+            boolean isMatched = discrepancy.compareTo(BigDecimal.ZERO) == 0;
 
-        long mismatches = results.stream()
-                .filter(r -> !r.getIsMatched())
-                .count();
+            if (!isMatched) {
+                log.error("RECONCILIATION MISMATCH for account {}: snapshot={}, computed={}, discrepancy={}",
+                        account.getId(), snapshotBalance, computedBalance, discrepancy);
+            }
+
+            logs.add(ReconciliationLog.builder()
+                    .accountId(account.getId())
+                    .snapshotBalance(snapshotBalance)
+                    .computedBalance(computedBalance)
+                    .isMatched(isMatched)
+                    .discrepancy(discrepancy)
+                    .build());
+        }
+
+        List<ReconciliationLog> savedLogs = reconciliationLogRepository.saveAll(logs);
+        long mismatches = savedLogs.stream().filter(l -> !l.getIsMatched()).count();
 
         log.info("Reconciliation complete. Total accounts: {}, Mismatches: {}",
-                results.size(), mismatches);
+                savedLogs.size(), mismatches);
 
-        return results;
+        return savedLogs.stream().map(this::toResponse).toList();
     }
 
     private ReconciliationResponse toResponse(ReconciliationLog logEntry) {
